@@ -1,0 +1,105 @@
+name: Backup Toate Repository-urile
+
+on:
+  schedule:
+    - cron: '0 2 * * *'  # Zilnic la 02:00 UTC
+  workflow_dispatch:
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Configurare Git
+      run: |
+        git config --global user.name "GitHub Actions"
+        git config --global user.email "actions@github.com"
+    
+    - name: Obține lista repository-urilor
+      id: get_repos
+      run: |
+        REPOS=$(curl -s "https://api.github.com/users/CristiWDT1881/repos?per_page=100" | jq -r '.[].name')
+        echo "Repository-uri găsite:"
+        echo "$REPOS"
+        echo "repos<<EOF" >> $GITHUB_OUTPUT
+        echo "$REPOS" >> $GITHUB_OUTPUT
+        echo "EOF" >> $GITHUB_OUTPUT
+    
+    - name: Clone și arhivează repository-uri
+      run: |
+        mkdir -p backups
+        CHANGED_REPOS=""
+        
+        for repo in ${{ steps.get_repos.outputs.repos }}; do
+          echo "Procesare: $repo"
+          
+          # Clonează repository
+          git clone "https://github.com/CristiWDT1881/$repo.git" "$repo"
+          
+          # Verifică ultima modificare (ultimele 24h)
+          cd "$repo"
+          COMMITS=$(git log --since="24 hours ago" --oneline | wc -l)
+          
+          if [ $COMMITS -gt 0 ]; then
+            echo "✓ $repo are $COMMITS modificări recente"
+            cd ..
+            
+            # Creează arhivă
+            DATE=$(date +%Y%m%d_%H%M%S)
+            tar -czf "backups/${repo}_${DATE}.tar.gz" --exclude='.git' "$repo"
+            
+            CHANGED_REPOS="$CHANGED_REPOS\n- $repo ($COMMITS commits)"
+          else
+            echo "- $repo fără modificări"
+            cd ..
+          fi
+          
+          rm -rf "$repo"
+        done
+        
+        echo "changed_repos<<EOF" >> $GITHUB_ENV
+        echo -e "$CHANGED_REPOS" >> $GITHUB_ENV
+        echo "EOF" >> $GITHUB_ENV
+        
+        # Verifică dacă sunt arhive
+        if [ -n "$(ls -A backups 2>/dev/null)" ]; then
+          echo "has_backups=true" >> $GITHUB_ENV
+        else
+          echo "has_backups=false" >> $GITHUB_ENV
+        fi
+    
+    - name: Creează arhivă unică cu toate backup-urile
+      if: env.has_backups == 'true'
+      run: |
+        DATE=$(date +%Y%m%d_%H%M%S)
+        cd backups
+        tar -czf "../all_repos_backup_${DATE}.tar.gz" *.tar.gz
+        cd ..
+        echo "FINAL_ARCHIVE=all_repos_backup_${DATE}.tar.gz" >> $GITHUB_ENV
+    
+    - name: Trimite email
+      if: env.has_backups == 'true'
+      uses: dawidd6/action-send-mail@v3
+      with:
+        server_address: smtp.gmail.com
+        server_port: 587
+        username: ${{ secrets.EMAIL_USERNAME }}
+        password: ${{ secrets.EMAIL_PASSWORD }}
+        subject: "Backup GitHub - Modificări detectate - $(date +%Y-%m-%d)"
+        to: tehnicdti@protonmail.com
+        from: GitHub Backup System
+        body: |
+          Backup automat pentru repository-urile GitHub.
+          
+          Repository-uri cu modificări în ultimele 24 ore:
+          ${{ env.changed_repos }}
+          
+          Data backup: $(date +%Y-%m-%d %H:%M:%S)
+          
+          Arhiva atașată conține toate repository-urile modificate.
+        attachments: ${{ env.FINAL_ARCHIVE }}
+    
+    - name: Log - Fără modificări
+      if: env.has_backups == 'false'
+      run: |
+        echo "Nu sunt modificări în ultimele 24 ore. Nu se trimite email."
