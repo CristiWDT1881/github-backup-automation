@@ -11,84 +11,109 @@ jobs:
   backup:
     runs-on: ubuntu-latest
     
+    permissions:
+      contents: write
+      
     steps:
     - name: Checkout repository backup
       uses: actions/checkout@v4
       with:
-        token: ${{ secrets.GITHUB_TOKEN }}
+        token: ${{ secrets.GH_PAT }}
+        fetch-depth: 0
     
     - name: Configurare Git
       run: |
         git config --global user.name "Backup Bot"
         git config --global user.email "cristianiftodexyz@gmail.com"
     
-    - name: Creează folder pentru arhive
+    - name: Creează structura de directoare
       run: |
         mkdir -p archives
         DATE=$(date +%Y-%m-%d)
+        TIME=$(date +%H:%M:%S)
         mkdir -p "archives/$DATE"
         echo "BACKUP_DATE=$DATE" >> $GITHUB_ENV
-        echo "BACKUP_TIME=$(date '+%H:%M:%S')" >> $GITHUB_ENV
+        echo "BACKUP_TIME=$TIME" >> $GITHUB_ENV
+        echo "📅 Backup pentru data: $DATE la ora $TIME"
     
     - name: Obține lista repository-urilor
-      id: repos
+      id: get_repos
       run: |
-        echo "📋 Obțin lista repository-urilor..."
+        echo "📋 Obțin lista repository-urilor de la GitHub..."
         curl -s "https://api.github.com/users/CristiWDT1881/repos?per_page=100&type=all" | \
           jq -r '.[].name' > repos_list.txt
         
         echo "Repository-uri găsite:"
         cat repos_list.txt
+        echo ""
         
         REPO_COUNT=$(cat repos_list.txt | wc -l)
+        echo "📊 Total: $REPO_COUNT repository-uri"
         echo "total_repos=$REPO_COUNT" >> $GITHUB_OUTPUT
     
-    - name: Backup repository-uri
-      id: backup
+    - name: Procesează și arhivează repository-uri
+      id: process
       run: |
         CHANGED=0
         UNCHANGED=0
+        ERRORS=0
         CHANGED_LIST=""
         UNCHANGED_LIST=""
-        ERRORS=""
+        ERROR_LIST=""
+        
+        echo "🔄 Încep procesarea repository-urilor..."
+        echo ""
         
         while IFS= read -r repo; do
-          echo ""
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "📦 Procesez: $repo"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "📦 Repository: $repo"
           
           # Skip repository-ul curent
           if [ "$repo" = "github-backup-automation" ]; then
-            echo "⊘ Skip (repository curent)"
+            echo "⊘ Skip (repository curent de backup)"
+            echo ""
             continue
           fi
           
-          # Clonează (folosim directoare safe)
-          SAFE_DIR="temp_repo_${RANDOM}"
-          if git clone --quiet --depth=50 "https://github.com/CristiWDT1881/${repo}.git" "$SAFE_DIR" 2>/dev/null; then
-            cd "$SAFE_DIR"
+          # Generează nume de director temporar sigur
+          TEMP_DIR="temp_$(date +%s)_${RANDOM}"
+          
+          # Clonează repository-ul
+          if git clone --quiet --depth=50 "https://github.com/CristiWDT1881/${repo}.git" "$TEMP_DIR" 2>/dev/null; then
+            cd "$TEMP_DIR"
             
-            # Verifică modificări ultimele 24h
+            # Verifică modificări în ultimele 24 ore
             COMMITS=$(git log --since="24 hours ago" --oneline 2>/dev/null | wc -l)
-            LAST_COMMIT=$(git log -1 --pretty=format:"%h - %s (%cr)" 2>/dev/null || echo "N/A")
             
-            if [ "$COMMITS" -gt 0 ]; then
-              echo "✓ $COMMITS modificări recente"
-              CHANGED=$((CHANGED + 1))
-              CHANGED_LIST="${CHANGED_LIST}- **${repo}**: ${COMMITS} commit(uri) - ${LAST_COMMIT}\n"
-              STATUS="MODIFICAT"
+            # Obține info despre ultimul commit
+            if [ -n "$(git log -1 2>/dev/null)" ]; then
+              LAST_COMMIT_MSG=$(git log -1 --pretty=format:"%s" 2>/dev/null | head -c 50)
+              LAST_COMMIT_DATE=$(git log -1 --pretty=format:"%cr" 2>/dev/null)
+              LAST_COMMIT_HASH=$(git log -1 --pretty=format:"%h" 2>/dev/null)
             else
-              echo "○ Fără modificări recente"
-              UNCHANGED=$((UNCHANGED + 1))
-              UNCHANGED_LIST="${UNCHANGED_LIST}- ${repo}: ${LAST_COMMIT}\n"
-              STATUS="NESCHIMBAT"
+              LAST_COMMIT_MSG="Repository gol"
+              LAST_COMMIT_DATE="N/A"
+              LAST_COMMIT_HASH="N/A"
             fi
             
             cd ..
             
-            # Creează arhivă (nume safe pentru fișier)
+            # Determină statusul
+            if [ "$COMMITS" -gt 0 ]; then
+              echo "✅ MODIFICAT: $COMMITS commit-uri în ultimele 24h"
+              CHANGED=$((CHANGED + 1))
+              CHANGED_LIST="${CHANGED_LIST}• **${repo}** → ${COMMITS} commit(uri) → \`${LAST_COMMIT_HASH}\` ${LAST_COMMIT_MSG} (${LAST_COMMIT_DATE})\n"
+              STATUS="MODIFICAT"
+            else
+              echo "○ NESCHIMBAT: Fără modificări recente"
+              UNCHANGED=$((UNCHANGED + 1))
+              UNCHANGED_LIST="${UNCHANGED_LIST}• ${repo} → Ultimul commit: ${LAST_COMMIT_DATE}\n"
+              STATUS="NESCHIMBAT"
+            fi
+            
+            # Creează arhivă pentru fiecare repository
             ARCHIVE_NAME="${repo}_${BACKUP_DATE}.tar.gz"
-            echo "📦 Creez arhivă..."
+            echo "📦 Creez arhivă: $ARCHIVE_NAME"
             
             tar -czf "archives/${BACKUP_DATE}/${ARCHIVE_NAME}" \
               --exclude='.git' \
@@ -96,27 +121,45 @@ jobs:
               --exclude='__pycache__' \
               --exclude='*.pyc' \
               --exclude='.env' \
-              "$SAFE_DIR" 2>/dev/null
+              --exclude='venv' \
+              --exclude='.venv' \
+              "$TEMP_DIR" 2>/dev/null
             
-            SIZE=$(du -h "archives/${BACKUP_DATE}/${ARCHIVE_NAME}" | cut -f1)
-            echo "✓ Arhivă creată: ${SIZE} [${STATUS}]"
+            if [ -f "archives/${BACKUP_DATE}/${ARCHIVE_NAME}" ]; then
+              SIZE=$(du -h "archives/${BACKUP_DATE}/${ARCHIVE_NAME}" | cut -f1)
+              echo "✓ Arhivă creată: ${SIZE} [${STATUS}]"
+            else
+              echo "⚠️ Eroare la crearea arhivei"
+            fi
             
-            rm -rf "$SAFE_DIR"
+            # Curăță directorul temporar
+            rm -rf "$TEMP_DIR"
+            
           else
-            echo "⚠️ Eroare la clonare (posibil gol sau inaccesibil)"
-            ERRORS="${ERRORS}- ${repo}: Nu a putut fi accesat\n"
+            echo "⚠️ EROARE: Nu pot clona repository-ul (posibil privat/gol/inaccesibil)"
+            ERRORS=$((ERRORS + 1))
+            ERROR_LIST="${ERROR_LIST}• ${repo} → Nu a putut fi accesat\n"
           fi
+          
+          echo ""
+          
         done < repos_list.txt
         
+        # Sumar final
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo "📊 SUMAR PROCESARE:"
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo "✅ Repository-uri cu modificări: $CHANGED"
+        echo "○ Repository-uri fără modificări: $UNCHANGED"
+        echo "⚠️ Erori: $ERRORS"
+        echo "📦 Total arhive create: $((CHANGED + UNCHANGED))"
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         echo ""
-        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-        echo "📊 SUMAR:"
-        echo "Repository-uri cu modificări: $CHANGED"
-        echo "Repository-uri fără modificări: $UNCHANGED"
-        echo "Total arhive create: $((CHANGED + UNCHANGED))"
         
+        # Salvează rezultatele pentru pașii următori
         echo "changed=$CHANGED" >> $GITHUB_OUTPUT
         echo "unchanged=$UNCHANGED" >> $GITHUB_OUTPUT
+        echo "errors=$ERRORS" >> $GITHUB_OUTPUT
         echo "total=$((CHANGED + UNCHANGED))" >> $GITHUB_OUTPUT
         
         echo "changed_list<<EOF" >> $GITHUB_OUTPUT
@@ -127,98 +170,71 @@ jobs:
         echo -e "$UNCHANGED_LIST" >> $GITHUB_OUTPUT
         echo "EOF" >> $GITHUB_OUTPUT
         
-        echo "errors<<EOF" >> $GITHUB_OUTPUT
-        echo -e "$ERRORS" >> $GITHUB_OUTPUT
+        echo "error_list<<EOF" >> $GITHUB_OUTPUT
+        echo -e "$ERROR_LIST" >> $GITHUB_OUTPUT
         echo "EOF" >> $GITHUB_OUTPUT
         
-        # Verifică dacă există arhive
-        if [ -d "archives/${BACKUP_DATE}" ] && [ "$(ls -A archives/${BACKUP_DATE} 2>/dev/null)" ]; then
+        # Verifică dacă există arhive create
+        if [ -d "archives/${BACKUP_DATE}" ] && [ -n "$(ls -A archives/${BACKUP_DATE} 2>/dev/null)" ]; then
           echo "has_archives=true" >> $GITHUB_OUTPUT
+          
+          # Numără arhivele
+          ARCHIVE_COUNT=$(ls -1 archives/${BACKUP_DATE}/*.tar.gz 2>/dev/null | wc -l)
+          echo "archive_count=$ARCHIVE_COUNT" >> $GITHUB_OUTPUT
         else
           echo "has_archives=false" >> $GITHUB_OUTPUT
+          echo "archive_count=0" >> $GITHUB_OUTPUT
         fi
     
-    - name: Creează arhivă master
-      if: steps.backup.outputs.has_archives == 'true'
+    - name: Creează arhivă master cu toate backup-urile
+      if: steps.process.outputs.has_archives == 'true'
       run: |
+        echo "📦 Creez arhiva master cu toate repository-urile..."
+        
         cd "archives/${BACKUP_DATE}"
         tar -czf "../../all_repos_backup_${BACKUP_DATE}.tar.gz" *.tar.gz
         cd ../..
         
-        MASTER_SIZE=$(du -h "all_repos_backup_${BACKUP_DATE}.tar.gz" | cut -f1)
-        echo "MASTER_ARCHIVE=all_repos_backup_${BACKUP_DATE}.tar.gz" >> $GITHUB_ENV
-        echo "MASTER_SIZE=$MASTER_SIZE" >> $GITHUB_ENV
-        
-        echo "✓ Arhivă master creată: $MASTER_SIZE"
+        if [ -f "all_repos_backup_${BACKUP_DATE}.tar.gz" ]; then
+          MASTER_SIZE=$(du -h "all_repos_backup_${BACKUP_DATE}.tar.gz" | cut -f1)
+          echo "MASTER_ARCHIVE=all_repos_backup_${BACKUP_DATE}.tar.gz" >> $GITHUB_ENV
+          echo "MASTER_SIZE=$MASTER_SIZE" >> $GITHUB_ENV
+          echo "✅ Arhivă master creată: $MASTER_SIZE"
+        else
+          echo "⚠️ Eroare la crearea arhivei master"
+        fi
     
-    - name: Commit arhivele în repository
-      if: steps.backup.outputs.has_archives == 'true'
+    - name: Salvează arhivele în repository
+      if: steps.process.outputs.has_archives == 'true'
       run: |
+        echo "💾 Salvez arhivele în repository..."
+        
         git add archives/
-        git commit -m "Backup automat ${BACKUP_DATE} - ${BACKUP_TIME}" || echo "Nimic de commit"
-        git push || echo "Nimic de push"
+        
+        if git diff --staged --quiet; then
+          echo "ℹ️ Nu sunt modificări de salvat"
+        else
+          git commit -m "📦 Backup automat ${BACKUP_DATE} la ${BACKUP_TIME} - ${BACKUP_DATE}" \
+                     -m "Repository-uri cu modificări: ${{ steps.process.outputs.changed }}" \
+                     -m "Repository-uri fără modificări: ${{ steps.process.outputs.unchanged }}" \
+                     -m "Total arhive: ${{ steps.process.outputs.archive_count }}"
+          
+          git push origin main
+          echo "✅ Arhivele au fost salvate în repository"
+        fi
     
-    - name: Creează Release
-      if: steps.backup.outputs.has_archives == 'true'
+    - name: Creează GitHub Release cu raport complet
+      if: steps.process.outputs.has_archives == 'true'
       uses: softprops/action-gh-release@v2
       with:
+        token: ${{ secrets.GH_PAT }}
         tag_name: backup-${{ env.BACKUP_DATE }}
-        name: "🗄️ Backup ${{ env.BACKUP_DATE }} ora ${{ env.BACKUP_TIME }}"
+        name: "🗄️ Backup ${{ env.BACKUP_DATE }} • ${{ env.BACKUP_TIME }}"
         body: |
-          ## 📦 Raport Backup Zilnic
+          # 📦 Raport Backup Automat Zilnic
           
-          **📅 Data:** ${{ env.BACKUP_DATE }} la ora ${{ env.BACKUP_TIME }}  
-          **📊 Total repository-uri:** ${{ steps.repos.outputs.total_repos }}  
-          **✅ Cu modificări:** ${{ steps.backup.outputs.changed }}  
-          **○ Fără modificări:** ${{ steps.backup.outputs.unchanged }}  
-          **📦 Total arhive create:** ${{ steps.backup.outputs.total }}  
-          **💾 Dimensiune arhivă master:** ${{ env.MASTER_SIZE }}
+          ## 📅 Informații generale
           
-          ---
-          
-          ### ✅ Repository-uri cu MODIFICĂRI (ultimele 24h):
-          ${{ steps.backup.outputs.changed_list }}
-          
-          ### ○ Repository-uri FĂRĂ modificări:
-          ${{ steps.backup.outputs.unchanged_list }}
-          
-          ### ⚠️ Erori/Avertismente:
-          ${{ steps.backup.outputs.errors }}
-          
-          ---
-          
-          ### 📥 Descărcare
-          - **Arhivă master** (toate repo-urile): Vezi mai jos
-          - **Arhive individuale**: În folder `archives/${{ env.BACKUP_DATE }}/`
-          
-          ### 📧 Notificări trimise către:
-          - cristianiftodexyz@gmail.com
-          - tehnicdti@protonmail.com
-          
-          ---
-          *🤖 Backup automat - GitHub Actions*
-        files: ${{ env.MASTER_ARCHIVE }}
-        draft: false
-        prerelease: false
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-    
-    - name: Raport final
-      run: |
-        echo ""
-        echo "════════════════════════════════════════════"
-        echo "🎯 RAPORT FINAL - ${{ env.BACKUP_DATE }}"
-        echo "════════════════════════════════════════════"
-        
-        if [ "${{ steps.backup.outputs.has_archives }}" = "true" ]; then
-          echo "✅ Backup finalizat cu succes!"
-          echo "📦 Arhive create: ${{ steps.backup.outputs.total }}"
-          echo "✓ Cu modificări: ${{ steps.backup.outputs.changed }}"
-          echo "○ Fără modificări: ${{ steps.backup.outputs.unchanged }}"
-          echo "💾 Arhivă master: ${{ env.MASTER_SIZE }}"
-          echo "📧 Notificări trimise pe email"
-        else
-          echo "ℹ️ Nu au fost create arhive"
-        fi
-        
-        echo "════════════════════════════════════════════"
+          | Detaliu | Valoare |
+          |---------|---------|
+          | **Data backup** | ${{ env.BACKUP_DATE
