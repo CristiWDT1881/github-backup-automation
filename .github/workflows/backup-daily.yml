@@ -237,4 +237,43 @@ jobs:
           
           | Detaliu | Valoare |
           |---------|---------|
-          | **Data backup** | ${{ env.BACKUP_DATE
+          | **Data backup** | ${{ env.BACKUP_DATE }} |
+          | **Ora backup** | ${{ env.BACKUP_TIME }} |
+          | **Total repository-uri** | ${{ steps.get_repos.outputs.total_repos }} |
+          | **✅ Cu modificări** | ${{ steps.process.outputs.changed }} |
+          | **○ Fără modificări** | ${{ steps.process.outputs.unchanged }} |
+          | **⚠️ Erori** | ${{ steps.process.outputs.errors }} |
+          | **📦 Total arhive** | ${{ steps.process.outputs.archive_count }} |
+          | **💾 Arhivă master** | ${{ env.MASTER_SIZE }} |
+          
+          ---
+          
+          ## ✅ Repository-uri cu MODIFICĂRI (ultimele 24 ore)
+          
+          ${{ steps.process.outputs.changed_list }}
+          
+          ---
+          
+          ## ○ Repository-uri FĂRĂ modificări recente
+          
+          ${{ steps.process.outputs.unchanged_list }}
+          
+          ---
+          
+          ## ⚠️ Erori / Avertismente
+          
+          ${{ steps.process.outputs.error_list }}
+          
+          ---
+          
+          ## 📥 Cum să descarci backup-urile
+          
+          ### Opțiunea 1: Arhiva master (RECOMANDAT)
+          Descarcă fișierul **`all_repos_backup_${{ env.BACKUP_DATE }}.tar.gz`** de mai jos.  
+          Conține toate repository-urile într-o singură arhivă.
+```bash
+          # Dezarhivează
+          tar -xzf all_repos_backup_${{ env.BACKUP_DATE }}.tar.gz
+          
+          # Apoi dezarhivează fiecare repository individual
+          tar -xzf nume_repository_${{ env.BACKUP_DATE }}.tar.gz
