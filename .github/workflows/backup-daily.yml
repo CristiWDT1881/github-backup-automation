@@ -40,16 +40,28 @@ jobs:
       id: get_repos
       run: |
         echo "📋 Obțin lista repository-urilor de la GitHub..."
-        curl -s "https://api.github.com/users/CristiWDT1881/repos?per_page=100&type=all" | \
-          jq -r '.[].name' > repos_list.txt
         
-        echo "Repository-uri găsite:"
-        cat repos_list.txt
-        echo ""
+        # FIXED: Adăugat header de autentificare
+        RESPONSE=$(curl -s -H "Authorization: token ${{ secrets.GH_PAT }}" \
+          "https://api.github.com/users/CristiWDT1881/repos?per_page=100&type=all")
         
-        REPO_COUNT=$(cat repos_list.txt | wc -l)
-        echo "📊 Total: $REPO_COUNT repository-uri"
-        echo "total_repos=$REPO_COUNT" >> $GITHUB_OUTPUT
+        # Verifică dacă răspunsul este valid JSON array
+        if echo "$RESPONSE" | jq -e '. | type == "array"' > /dev/null 2>&1; then
+          echo "$RESPONSE" | jq -r '.[].name' > repos_list.txt
+          
+          echo "Repository-uri găsite:"
+          cat repos_list.txt
+          echo ""
+          
+          REPO_COUNT=$(cat repos_list.txt | wc -l)
+          echo "📊 Total: $REPO_COUNT repository-uri"
+          echo "total_repos=$REPO_COUNT" >> $GITHUB_OUTPUT
+        else
+          echo "❌ EROARE: Răspuns invalid de la GitHub API"
+          echo "Răspuns primit:"
+          echo "$RESPONSE"
+          exit 1
+        fi
     
     - name: Procesează și arhivează repository-uri
       id: process
@@ -78,8 +90,8 @@ jobs:
           # Generează nume de director temporar sigur
           TEMP_DIR="temp_$(date +%s)_${RANDOM}"
           
-          # Clonează repository-ul
-          if git clone --quiet --depth=50 "https://github.com/CristiWDT1881/${repo}.git" "$TEMP_DIR" 2>/dev/null; then
+          # FIXED: Clonează folosind token pentru repo-uri private
+          if git clone --quiet --depth=50 "https://${{ secrets.GH_PAT }}@github.com/CristiWDT1881/${repo}.git" "$TEMP_DIR" 2>/dev/null; then
             cd "$TEMP_DIR"
             
             # Verifică modificări în ultimele 24 ore
